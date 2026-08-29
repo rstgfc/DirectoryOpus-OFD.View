@@ -73,7 +73,7 @@ const GUIDE: { n: string; t: string; b: ReactNode }[] = [
   {
     n: '03',
     t: '路线 A：把本工具当作随身预览台',
-    b: '本页面是纯前端实现，构建产物保存为本地 HTML 即可完全离线使用。在 Directory Opus 里选中 .ofd 文件后拖进本页面，秒级解包渲染；支持逐页翻阅、无级缩放、导出 PNG，全程不上传任何数据。',
+    b: '点击右上角「下载离线版」，即可把整个工具（解析引擎 + 界面）打包成单个 HTML 文件，保存到任意目录、双击离线使用（推荐 Chrome / Edge）。日常在 Directory Opus 里选中 .ofd 文件后拖入该页面，秒级解包渲染；支持逐页翻阅、无级缩放、导出 PNG，全程不上传任何数据。也可以把这个 HTML 拖进 Opus 的工具栏或收藏夹，一键调起。',
   },
   {
     n: '04',
@@ -356,6 +356,45 @@ export default function App() {
     img.src = url;
   };
 
+  /* ---------- 导出离线单文件版 ---------- */
+  const downloadStandalone = async () => {
+    toast('正在打包离线版（内联全部脚本与样式）…');
+    try {
+      const clone = document.documentElement.cloneNode(true) as HTMLElement;
+      const links = Array.from(clone.querySelectorAll('link[rel="stylesheet"]'));
+      for (const link of links) {
+        const href = (link as HTMLLinkElement).href;
+        if (!href || /fonts\.(googleapis|gstatic)\.com/.test(href)) continue;
+        const css = await (await fetch(href)).text();
+        const style = document.createElement('style');
+        style.textContent = css;
+        link.replaceWith(style);
+      }
+      const scripts = Array.from(clone.querySelectorAll('script[src]'));
+      for (const s of scripts) {
+        const src = (s as HTMLScriptElement).src;
+        if (!src) continue;
+        const code = await (await fetch(src)).text();
+        const ns = document.createElement('script');
+        ns.type = (s as HTMLScriptElement).type || 'text/javascript';
+        ns.textContent = code;
+        s.replaceWith(ns);
+      }
+      const root = clone.querySelector('#root');
+      if (root) root.innerHTML = '';
+      const html = `<!doctype html>\n${clone.outerHTML}`;
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'OFD版式预览台-离线版.html';
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      toast('已导出单文件离线版，双击即可离线使用', 'ok');
+    } catch {
+      toast('打包失败，请重试。', 'err');
+    }
+  };
+
   const guide = () => {
     if (doc) setGuideOpen(true);
     else document.getElementById('guide')?.scrollIntoView({ behavior: 'smooth' });
@@ -400,6 +439,10 @@ export default function App() {
             </span>
           </button>
           <nav className="hdr-nav">
+            <button className="btn btn-ghost btn-sm" onClick={() => void downloadStandalone()} title="将整个工具打包为单个 HTML 文件，保存后双击离线使用">
+              <Icon name="dl" size={15} />
+              下载离线版
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={guide}>
               <Icon name="info" size={15} />
               集成指南
