@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>OFD Viewer</title>
+<style>
+  :root{
+    --bg:#141a24; --panel:#1d2532; --line:#2c3748; --ink:#e8edf4;
+    --dim:#8b99ad; --red:#e05743; --mono:Consolas,"Courier New",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font:13px/1.5 "Microsoft YaHei",sans-serif;
+       display:flex;flex-direction:column;overflow:hidden}
+  #bar{display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--panel);
+       border-bottom:1px solid var(--line);flex:none}
+  #fname{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;
+         text-overflow:ellipsis;max-width:42%}
+  #fname b{color:var(--red)}
+  .sp{flex:1}
+  button{background:transparent;border:1px solid var(--line);color:var(--ink);
+         font:12px var(--mono);padding:3px 9px;cursor:pointer;border-radius:4px}
+  button:hover{border-color:var(--red);color:var(--red)}
+  button:disabled{opacity:.35;cursor:default;border-color:var(--line);color:var(--ink)}
+  #pg{font-family:var(--mono);font-size:12px;min-width:64px;text-align:center}
+  .sep{width:1px;height:16px;background:var(--line)}
+  #stage{flex:1;overflow:auto;display:flex;flex-direction:column;align-items:center;
+         padding:22px 16px;gap:18px}
+  .page{background:#fff;box-shadow:0 6px 24px rgba(0,0,0,.45);flex:none}
+  .page svg{display:block}
+  #hint{margin:auto;text-align:center;color:var(--dim);border:2px dashed var(--line);
+        padding:42px 56px;border-radius:8px}
+  #hint small{display:block;margin-top:8px;font-size:11px;opacity:.75}
+  #foot{flex:none;padding:5px 12px;background:var(--panel);border-top:1px solid var(--line);
+        font-family:var(--mono);font-size:11px;color:var(--dim);display:flex;gap:16px}
+  #foot b{color:var(--ink)}
+  #err{display:none;margin:14px;padding:10px 14px;background:#3a1f1f;border:1px solid #7a3030;
+       color:#f0b3ab;border-radius:6px;font-size:12px}
+</style>
+</head>
+<body>
+<div id="bar">
+  <span id="fname"><b>OFD</b>&nbsp;等待文件…</span>
+  <span class="sp"></span>
+  <button id="prev" title="上一页">&#8249;</button>
+  <span id="pg">0 / 0</span>
+  <button id="next" title="下一页">&#8250;</button>
+  <span class="sep"></span>
+  <button id="zo" title="缩小">&#8722;</button>
+  <span id="pg2" style="font-family:var(--mono);font-size:12px;min-width:44px;text-align:center">100%</span>
+  <button id="zi" title="放大">+</button>
+  <button id="fit" title="适应宽度">适应</button>
+  <button id="one" title="原始大小">1:1</button>
+</div>
+<div id="err"></div>
+<div id="stage">
+  <div id="hint">正在等待 Directory Opus 发送文件…
+    <small>也可以直接把 .ofd 文件拖进本窗口进行测试（独立运行模式）</small>
+  </div>
+</div>
+<div id="foot">
+  <span>页 <b id="f1">0</b> / <b id="f2">0</b></span>
+  <span>尺寸 <b id="f3">—</b> mm</span>
+  <span>对象 <b id="f4">—</b></span>
+  <span style="margin-left:auto">OFD · GB/T 33190-2016 · 本地渲染</span>
+</div>
+
+<script>
+"use strict";
+/* ================= OFD 解析 / SVG 渲染引擎（纯 JS，与网页版同源） ================= */
+
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function r2(n){return String(Math.round(n*100)/100);}
+function num(v,d){var n=parseFloat(v);return isFinite(n)?n:d;}
+function kid(el,name){if(!el)return null;for(var i=0;i<el.children.length;i++)if(el.children[i].localName===name)return el.children[i];return null;}
+function deep(root,name){var out=[];if(!root)return out;(function walk(el){for(var i=0;i<el.children.length;i++){var c=el.children[i];if(c.localName===name)out.push(c);walk(c);}})(root);return out;}
+function xmlOf(text,label){var d=new DOMParser().parseFromString(text,"application/xml");if(d.getElementsByTagName("parsererror").length)throw new Error(label+" 不是合法 XML");return d.documentElement;}
+
+function colorOf(el,ctx){
+  if(!el)return null;
+  var value=(el.getAttribute("Value")||"").trim();
+  var alpha=num(el.getAttribute("Alpha"),255)/255;
+  var r=0,g=0,b=0;
+  var csId=el.getAttribute("ColorSpace");
+  var palette=csId?ctx.palettes.get(csId):null;
+  var parts=value.split(/\s+/).filter(Boolean);
+  if(parts.length>=3){r=+parts[0];g=+parts[1];b=+parts[2];}
+  else if(parts.length===1&&palette){var cv=(palette[parseInt(parts[0],10)]||"0 0 0").split(/\s+/).map(Number);r=cv[0]||0;g=cv[1]||0;b=cv[2]||0;}
+  else if(parts.length===1){r=g=b=+parts[0];}
+  return "rgba("+(r|0)+","+(g|0)+","+(b|0)+","+alpha.toFixed(3)+")";
+}
+
+function abbrevToD(ab){
+  var tokens=ab.match(/[SMLCBAQ]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g)||[];
+  var need={S:2,M:2,L:2,Q:4,B:6,A:7,C:0};
+  var d="",cmd="",i=0;
+  while(i<tokens.length){
+    var t=tokens[i];
+    if(/^[SMLCBAQ]$/.test(t)){cmd=t;i++;if(cmd==="C"){d+=" Z";cmd="";}continue;}
+    if(!cmd){i++;continue;}
+    var n=need[cmd],nums=[];
+    while(nums.length<n&&i<tokens.length&&!/^[SMLCBAQ]$/.test(tokens[i])){nums.push(parseFloat(tokens[i]));i++;}
+    if(nums.length<n)break;
+    if(cmd==="S"||cmd==="M")d+=" M "+r2(nums[0])+" "+r2(nums[1]);
+    else if(cmd==="L")d+=" L "+r2(nums[0])+" "+r2(nums[1]);
+    else if(cmd==="Q")d+=" Q "+nums.slice(0,4).map(r2).join(" ");
+    else if(cmd==="B")d+=" C "+nums.slice(0,6).map(r2).join(" ");
+    else if(cmd==="A")d+=" A "+r2(nums[0])+" "+r2(nums[1])+" "+r2(nums[2])+" "+(nums[3]>0?1:0)+" "+(nums[4]>0?1:0)+" "+r2(nums[5])+" "+r2(nums[6]);
+  }
+  return d.trim();
+}
+
+function glyphPositions(start,deltaStr,count,step){
+  if(!deltaStr||!deltaStr.trim())return r2(start);
+  var deltas=[],toks=deltaStr.trim().split(/\s+/);
+  for(var i=0;i<toks.length;i++){
+    if(toks[i]==="g"||toks[i]==="G"){var rep=parseInt(toks[i+1],10)||0;var val=parseFloat(toks[i+2]);for(var k=0;k<rep;k++)deltas.push(isFinite(val)?val:0);i+=2;}
+    else{var v=parseFloat(toks[i]);if(isFinite(v))deltas.push(v);}
+  }
+  var pos=[start],cur=start;
+  for(var j=1;j<count;j++){cur+=(j-1<deltas.length)?deltas[j-1]:step;pos.push(cur);}
+  return pos.map(r2).join(" ");
+}
+
+function renderText(el,ctx,counts){
+  var fontId=el.getAttribute("Font")||"";
+  var font=ctx.fonts.get(fontId);
+  var size=num(el.getAttribute("Size"),3.5);
+  var fill=colorOf(kid(el,"StrokeColor"),ctx)||colorOf(kid(el,"FillColor"),ctx)||"rgba(0,0,0,1)";
+  var hscale=num(el.getAttribute("HScale"),1);
+  var weight=el.getAttribute("Weight")==="800"?700:400;
+  var family=font&&(font.family||font.name)?esc(font.family||font.name)+', "Microsoft YaHei", SimSun, serif':'"Microsoft YaHei", SimSun, serif';
+  var codes=deep(el,"TextCode");if(!codes.length)return "";
+  var inner="";
+  codes.forEach(function(tc){
+    var X=num(tc.getAttribute("X"),0),Y=num(tc.getAttribute("Y"),0);
+    var text=tc.textContent||"";if(!text)return;
+    var chars=Array.from(text);
+    var xs=glyphPositions(X,tc.getAttribute("DeltaX"),chars.length,size);
+    var ys=glyphPositions(Y,tc.getAttribute("DeltaY"),chars.length,0);
+    inner+='<text x="'+xs+'" y="'+ys+'">'+esc(text)+"</text>";
+  });
+  if(!inner)return "";
+  var ctm=(el.getAttribute("CTM")||"").trim();
+  var tf=[];
+  if(ctm)tf.push("matrix("+ctm.split(/\s+/).join(" ")+")");
+  if(Math.abs(hscale-1)>1e-6)tf.push("matrix("+r2(hscale)+" 0 0 1 0 0)");
+  counts.text++;
+  return '<g'+(tf.length?' transform="'+tf.join(" ")+'"':"")+' font-family="'+family+'" font-size="'+r2(size)+'" font-weight="'+weight+'" fill="'+fill+'">'+inner+"</g>";
+}
+
+function renderPath(el,ctx,counts){
+  var d=abbrevToD(el.getAttribute("AbbreviatedData")||"");
+  if(!d)return "";
+  var lineWidth=num(el.getAttribute("LineWidth"),0.353);
+  var stroke=colorOf(kid(el,"StrokeColor"),ctx);
+  var fill=colorOf(kid(el,"FillColor"),ctx);
+  var dash=(el.getAttribute("DashPattern")||"").trim();
+  var join=(el.getAttribute("Join")||"").toLowerCase();
+  var cap=(el.getAttribute("Cap")||"").toLowerCase();
+  var rule=el.getAttribute("Rule")==="EOFill"?' fill-rule="evenodd"':"";
+  var attrs=[fill?'fill="'+fill+'"':'fill="none"'];
+  if(el.getAttribute("Stroke")!=="false"){
+    attrs.push('stroke="'+(stroke||"rgba(0,0,0,1)")+'"','stroke-width="'+r2(lineWidth)+'"');
+    if(dash)attrs.push('stroke-dasharray="'+dash.split(/\s+/).map(r2).join(" ")+'"');
+    if(join)attrs.push('stroke-linejoin="'+join+'"');
+    if(cap)attrs.push('stroke-linecap="'+cap+'"');
+  }
+  var ctm=(el.getAttribute("CTM")||"").trim();
+  counts.path++;
+  return '<path d="'+d+'"'+(ctm?' transform="matrix('+ctm.split(/\s+/).join(" ")+' )"':"")+rule+" "+attrs.join(" ")+"/>";
+}
+
+function renderImage(el,ctx,counts){
+  var rid=el.getAttribute("ResourceID")||"";
+  var src=ctx.images.get(rid);
+  var b=(el.getAttribute("Boundary")||"0 0 0 0").trim().split(/\s+/).map(Number);
+  var x=b[0]||0,y=b[1]||0,w=b[2]||0,h=b[3]||0;
+  counts.image++;
+  if(!src||w<=0||h<=0)return "";
+  var ctm=(el.getAttribute("CTM")||"").trim();
+  return '<image href="'+src+'" x="'+r2(x)+'" y="'+r2(y)+'" width="'+r2(w)+'" height="'+r2(h)+'" preserveAspectRatio="none"'+(ctm?' transform="matrix('+ctm.split(/\s+/).join(" ")+' )"':"")+"/>";
+}
+
+function resolveFile(files,docDir,path){
+  var p=path.trim().replace(/^\/+/,"");
+  if(files.has(p))return files.get(p);
+  if(files.has(docDir+p))return files.get(docDir+p);
+  var base=p.split("/").pop()||p;
+  var keys=Array.from(files.keys());
+  for(var i=0;i<keys.length;i++){var k=keys[i];if(k.split("/").pop()===base)return files.get(k);}
+  return null;
+}
+
+function loadResources(files,docDir,resPaths,ctx){
+  resPaths.forEach(function(rp){
+    var f=resolveFile(files,docDir,rp);if(!f)return null;
+    var rootEl;try{rootEl=xmlOf(f.text,"资源文件 "+rp);}catch(e){return null;}
+    deep(rootEl,"Font").forEach(function(fe){
+      var id=fe.getAttribute("ID")||"";
+      var family=((fe.getAttribute("FamilyName")||"")+(kid(fe,"FamilyName")?kid(fe,"FamilyName").textContent:"")).trim();
+      var name=((fe.getAttribute("FontName")||"")+(kid(fe,"FontName")?kid(fe,"FontName").textContent:"")).trim();
+      ctx.fonts.set(id,{family:family,name:name});
+    });
+    deep(rootEl,"ColorSpace").forEach(function(cs){
+      var id=cs.getAttribute("ID")||"";var pal=kid(cs,"Palette");
+      if(pal){var values=[];for(var i=0;i<pal.children.length;i++)if(pal.children[i].localName==="CVValue")values.push((pal.children[i].textContent||"").trim());ctx.palettes.set(id,values);}
+    });
+    deep(rootEl,"MultiMedia").forEach(function(mm){
+      if((mm.getAttribute("Type")||"")!=="Image")return;
+      var id=mm.getAttribute("ID")||"";
+      var path=(kid(mm,"MediaFile")?kid(mm,"MediaFile").textContent:"").trim();
+      if(!path)return;
+      if(/^data:/i.test(path)){ctx.images.set(id,path);return;}
+      var img=resolveFile(files,docDir,path);if(!img)return;
+      var fmt=(mm.getAttribute("Format")||path.split(".").pop()||"png").toLowerCase();
+      var mime=(fmt==="jpg"||fmt==="jpeg")?"image/jpeg":fmt==="gif"?"image/gif":fmt==="bmp"?"image/bmp":"image/png";
+      ctx.images.set(id,"data:"+mime+";base64,"+bytesToB64(img.bytes));
+    });
+  });
+}
+
+async function parseOfdBytes(u8){
+  var files=await unzip(u8);
+  var names=Array.from(files.keys());
+  var rootName=names.find(function(n){return /(^|\/)OFD\.xml$/i.test(n);});
+  if(!rootName)throw new Error("压缩包中找不到 OFD.xml 入口，不是有效的 OFD 包");
+  var rootEl=xmlOf(files.get(rootName).text,"OFD.xml");
+  var docBody=kid(rootEl,"DocBody");
+  if(!docBody)throw new Error("OFD.xml 缺少 DocBody");
+  var docEntry=((kid(docBody,"DocRoot")?kid(docBody,"DocRoot").textContent:"")||"Doc_0/Document.xml").trim();
+  var docFile=resolveFile(files,"",docEntry);
+  if(!docFile)throw new Error("找不到文档定义文件 "+docEntry);
+  var docDir=docEntry.indexOf("/")>=0?docEntry.slice(0,docEntry.lastIndexOf("/")+1):"";
+  var docEl=xmlOf(docFile.text,docEntry);
+  var common=kid(docEl,"CommonData");
+  if(!common)throw new Error("Document.xml 缺少 CommonData");
+  var areaEl=kid(common,"PageArea");
+  var box=((areaEl&&kid(areaEl,"PhysicalBox")?kid(areaEl,"PhysicalBox").textContent:"")||"0 0 210 297").trim().split(/\s+/).map(Number);
+  var defW=box[2]||210,defH=box[3]||297;
+  var resPaths=[];
+  ["PublicRes","DocumentRes"].forEach(function(n){var v=(kid(common,n)?kid(common,n).textContent:"").trim();if(v)resPaths.push(v);});
+  var ctx={fonts:new Map(),palettes:new Map(),images:new Map()};
+  loadResources(files,docDir,resPaths,ctx);
+  var pagesEl=kid(docEl,"Pages");
+  if(!pagesEl)throw new Error("Document.xml 中没有页树");
+  var pages=[];
+  deep(pagesEl,"Page").forEach(function(pageEl){
+    var baseLoc=(pageEl.getAttribute("BaseLoc")||"").trim();
+    if(!baseLoc)return;
+    var pf=resolveFile(files,docDir,baseLoc);if(!pf)return;
+    var pageRoot;try{pageRoot=xmlOf(pf.text,baseLoc);}catch(e){return;}
+    var area=kid(pageRoot,"Area");
+    var pb=(((area&&kid(area,"PhysicalBox"))?kid(area,"PhysicalBox").textContent:"")||"").trim().split(/\s+/).map(Number);
+    var w=pb[2]||defW,h=pb[3]||defH;
+    var counts={text:0,path:0,image:0};
+    var parts=[];
+    deep(pageRoot,"Layer").forEach(function(layer){
+      for(var i=0;i<layer.children.length;i++){
+        var o=layer.children[i];
+        try{
+          if(o.localName==="TextObject")parts.push(renderText(o,ctx,counts));
+          else if(o.localName==="PathObject")parts.push(renderPath(o,ctx,counts));
+          else if(o.localName==="ImageObject")parts.push(renderImage(o,ctx,counts));
+        }catch(e){}
+      }
+    });
+    var svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+r2(w)+" "+r2(h)+'" style="background:#fff">'+parts.join("")+"</svg>";
+    pages.push({w:w,h:h,svg:svg,counts:counts});
+  });
+  if(!pages.length)throw new Error("未能解析出任何页面");
+  return pages;
+}
+
+/* ================= ZIP 解包（本地文件头 + DecompressionStream） ================= */
+
+function le16(v,o){return v[o]|(v[o+1]<<8);}
+function le32(v,o){return (v[o]|(v[o+1]<<8)|(v[o+2]<<16)|(v[o+3]<<24))>>>0;}
+
+async function inflate(comp){
+  var ds=new DecompressionStream("deflate-raw");
+  var buf=await new Response(new Blob([comp]).stream().pipeThrough(ds)).arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+async function unzip(u8){
+  var view=u8;
+  var n=view.length,eocd=-1;
+  for(var i=n-22;i>=Math.max(0,n-22-65536);i--){
+    if(view[i]===0x50&&view[i+1]===0x4b&&view[i+2]===0x05&&view[i+3]===0x06){eocd=i;break;}
+  }
+  if(eocd<0)throw new Error("不是有效的 ZIP 容器");
+  var count=le16(view,eocd+10);
+  var cdOff=le32(view,eocd+16);
+  var dec=new TextDecoder("utf-8");
+  var files=new Map();
+  var p=cdOff;
+  for(var k=0;k<count;k++){
+    if(le32(view,p)!==0x02014b50)break;
+    var method=le16(view,p+10);
+    var compSize=le32(view,p+20);
+    var nameLen=le16(view,p+28),extraLen=le16(view,p+30),cmtLen=le16(view,p+32);
+    var localOff=le32(view,p+42);
+    var name=dec.decode(view.subarray(p+46,p+46+nameLen));
+    var isDir=name.charAt(name.length-1)==="/";
+    if(!isDir){
+      var lh=localOff;
+      var lNameLen=le16(view,lh+26),lExtraLen=le16(view,lh+28);
+      var dataStart=lh+30+lNameLen+lExtraLen;
+      var comp=view.subarray(dataStart,dataStart+compSize);
+      var bytes;
+      if(method===0)bytes=new Uint8Array(comp);
+      else if(method===8)bytes=await inflate(comp);
+      else bytes=new Uint8Array(0);
+      files.set(name,{bytes:bytes,text:null});
+    }
+    p+=46+nameLen+extraLen+cmtLen;
+  }
+  files.forEach(function(v){v.text=dec.decode(v.bytes);});
+  return files;
+}
+
+var B64C="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function bytesToB64(bytes){
+  var s="";
+  for(var i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));
+  return btoa(s);
+}
+function b64ToU8(b64){
+  var bin=atob(b64);
+  var u8=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+  return u8;
+}
+
+/* ============================== UI ============================== */
+
+var pages=[],idx=0,zoom=1;
+var stage=document.getElementById("stage");
+var hint=document.getElementById("hint");
+var errBox=document.getElementById("err");
+
+function fmt(n){return String(Math.round(n*100)/100);}
+
+function renderPage(){
+  if(!pages.length)return;
+  var p=pages[idx];
+  stage.innerHTML="";
+  var div=document.createElement("div");
+  div.className="page";
+  div.style.width=(p.w*3*zoom)+"px";
+  div.innerHTML=p.svg;
+  stage.appendChild(div);
+  document.getElementById("pg").textContent=(idx+1)+" / "+pages.length;
+  document.getElementById("f1").textContent=idx+1;
+  document.getElementById("f2").textContent=pages.length;
+  document.getElementById("f3").textContent=fmt(p.w)+" × "+fmt(p.h);
+  document.getElementById("f4").textContent="文 "+p.counts.text+" · 路 "+p.counts.path+" · 图 "+p.counts.image;
+  document.getElementById("pg2").textContent=Math.round(zoom*100)+"%";
+  document.getElementById("prev").disabled=idx===0;
+  document.getElementById("next").disabled=idx===pages.length-1;
+}
+
+function fitWidth(){
+  if(!pages.length)return;
+  zoom=Math.min(2.6,Math.max(0.3,(stage.clientWidth-64)/(pages[idx].w*3)));
+  renderPage();
+}
+
+function clearAll(){pages=[];idx=0;zoom=1;stage.innerHTML="";stage.appendChild(hint);errBox.style.display="none";
+  document.getElementById("fname").innerHTML="<b>OFD</b>&nbsp;等待文件…";}
+
+function showError(msg){errBox.textContent="× "+msg;errBox.style.display="block";}
+
+async function loadBytes(u8,name){
+  errBox.style.display="none";
+  try{
+    pages=await parseOfdBytes(u8);
+    idx=0;
+    document.getElementById("fname").innerHTML="<b>OFD</b>&nbsp;"+esc(name)+"（"+pages.length+" 页）";
+    hint.style.display="none";
+    fitWidth();
+  }catch(e){
+    clearAll();
+    showError(e&&e.message?e.message:"解析失败");
+  }
+}
+
+document.getElementById("prev").onclick=function(){if(idx>0){idx--;renderPage();}};
+document.getElementById("next").onclick=function(){if(idx<pages.length-1){idx++;renderPage();}};
+document.getElementById("zo").onclick=function(){zoom=Math.max(0.3,zoom/1.2);renderPage();};
+document.getElementById("zi").onclick=function(){zoom=Math.min(2.6,zoom*1.2);renderPage();};
+document.getElementById("fit").onclick=fitWidth;
+document.getElementById("one").onclick=function(){zoom=1;renderPage();};
+
+/* ---------- Directory Opus ↔ WebView2 消息桥 ---------- */
+if(window.chrome&&window.chrome.webview){
+  window.chrome.webview.addEventListener("message",function(e){
+    var m;try{m=JSON.parse(e.data);}catch(x){return;}
+    if(m.type==="load"){loadBytes(b64ToU8(m.data),m.name);}
+    else if(m.type==="clear"){clearAll();}
+    else if(m.type==="zoom"){
+      if(!pages.length)return;
+      var v=m.value|0;
+      if(v===0)zoom=1;
+      else if(v===-1)fitWidth();
+      else if(v===-2)fitWidth();
+      else if(v>0)zoom=Math.min(2.6,Math.max(0.3,v/100));
+      renderPage();
+    }
+    else if(m.type==="error"){clearAll();showError(m.message||"错误");}
+  });
+}
+
+/* ---------- 独立测试：拖放 ---------- */
+window.addEventListener("dragover",function(e){e.preventDefault();});
+window.addEventListener("drop",function(e){
+  e.preventDefault();
+  var f=e.dataTransfer.files&&e.dataTransfer.files[0];
+  if(!f)return;
+  var rd=new FileReader();
+  rd.onload=function(){loadBytes(new Uint8Array(rd.result),f.name);};
+  rd.readAsArrayBuffer(f);
+});
+</script>
+</body>
+</html>
