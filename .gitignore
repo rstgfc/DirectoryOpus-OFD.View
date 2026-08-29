@@ -1,5 +1,26 @@
+# Node
 node_modules/
-.next/
 dist/
-build/
+*.local
+.npm/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
 *.log
+
+# DOpus 插件构建产物与中间文件
+dopus-ofd-plugin/packages/
+dopus-ofd-plugin/*.dop
+dopus-ofd-plugin/*.dll
+dopus-ofd-plugin/*.obj
+dopus-ofd-plugin/*.exp
+dopus-ofd-plugin/*.lib
+dopus-ofd-plugin/*.pdb
+dopus-ofd-plugin/.vs/
+dopus-ofd-plugin/x64/
+*.user
+*.suo
+.next/
+build/
