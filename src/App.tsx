@@ -3,6 +3,13 @@ import type { ReactNode } from 'react';
 import type { OfdResult } from './lib/ofd';
 import { OfdError, fmtSize, parseOfd } from './lib/ofd';
 import { buildSampleOfd } from './lib/sample';
+import JSZip from 'jszip';
+import pluginReadme from '../dopus-ofd-plugin/README.md?raw';
+import pluginSdkHeader from '../dopus-ofd-plugin/include/dopus/viewer_plugins.h?raw';
+import pluginCpp from '../dopus-ofd-plugin/src/ofd_viewer_plugin.cpp?raw';
+import pluginDef from '../dopus-ofd-plugin/src/plugin.def?raw';
+import pluginBat from '../dopus-ofd-plugin/build.bat?raw';
+import pluginWeb from '../dopus-ofd-plugin/web/ofd_viewer.html?raw';
 
 /* ============================ 图标 ============================ */
 
@@ -82,8 +89,8 @@ const GUIDE: { n: string; t: string; b: ReactNode }[] = [
   },
   {
     n: '05',
-    t: '路线 C：自研一个 .dop 插件',
-    b: '基于 GP Software 的 Plugin SDK（C/C++）编写 Viewer 插件：用 WebView2 内嵌 ofd.js 直接渲染版式，或以命令行调用 ofdrw 将页面转为位图后用 GDI+ 绘制。编译为 DLL、改扩展名为 .dop，放入插件目录即可被 Directory Opus 识别加载。',
+    t: '路线 C：安装自研的 .dop 原生插件（源码已备好）',
+    b: '点击右上角「DOpus 插件源码」即可下载完整工程：基于 GP Software 官方 Viewer Plugin SDK v4 实现的 ofd_viewer.dop（校验 ZIP 魔数与 OFD.xml 特征后接管 .ofd），内部用 WebView2 宿主纯 JS 渲染页逐页绘制版式。解压后在 Visual Studio 的 x64 命令行里运行 build.bat 一键编译，把 ofd_viewer.dop 与 web/ofd_viewer.html 复制到 DOpus 安装目录，在「首选项 → 查看器 → 插件」中勾选启用即可。内嵌渲染页也可单独用浏览器打开、拖入 OFD 先行验证。',
   },
 ];
 
@@ -395,6 +402,30 @@ export default function App() {
     }
   };
 
+  /* ---------- 打包 Directory Opus 原生插件源码 ---------- */
+  const downloadPluginZip = async () => {
+    toast('正在打包 Directory Opus 插件源码…');
+    try {
+      const zip = new JSZip();
+      const root = zip.folder('dopus-ofd-plugin')!;
+      root.file('README.md', pluginReadme);
+      root.file('build.bat', pluginBat);
+      root.file('src/ofd_viewer_plugin.cpp', pluginCpp);
+      root.file('src/plugin.def', pluginDef);
+      root.file('include/dopus/viewer_plugins.h', pluginSdkHeader);
+      root.file('web/ofd_viewer.html', pluginWeb);
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dopus-ofd-plugin-source.zip';
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      toast('插件源码包已下载：解压后在 VS x64 命令行运行 build.bat 即得 .dop', 'ok');
+    } catch {
+      toast('打包失败，请重试。', 'err');
+    }
+  };
+
   const guide = () => {
     if (doc) setGuideOpen(true);
     else document.getElementById('guide')?.scrollIntoView({ behavior: 'smooth' });
@@ -439,6 +470,14 @@ export default function App() {
             </span>
           </button>
           <nav className="hdr-nav">
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => void downloadPluginZip()}
+              title="下载 Directory Opus 原生 OFD 插件（ofd_viewer.dop）的完整源码包，含官方 SDK 头文件与一键构建脚本"
+            >
+              <Icon name="box" size={15} />
+              DOpus 插件源码
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={() => void downloadStandalone()} title="将整个工具打包为单个 HTML 文件，保存后双击离线使用">
               <Icon name="dl" size={15} />
               下载离线版

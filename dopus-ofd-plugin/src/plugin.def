@@ -1,0 +1,12 @@
+LIBRARY "ofd_viewer"
+
+EXPORTS
+    DVP_Init
+    DVP_InitEx
+    DVP_Uninit
+    DVP_IdentifyA
+    DVP_IdentifyW
+    DVP_IdentifyFileA
+    DVP_IdentifyFileW
+    DVP_CreateViewer
+    DVP_About
